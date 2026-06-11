@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>OpenControllerFinance</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #020617;
+        color: #e2e8f0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .card {
+        width: 100%;
+        max-width: 380px;
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid #1e293b;
+        border-radius: 20px;
+        padding: 32px 24px;
+      }
+      h1 { font-size: 22px; font-weight: 600; }
+      h1 span { color: #34d399; }
+      p { margin-top: 6px; font-size: 14px; color: #94a3b8; line-height: 1.5; }
+      label { display: block; margin-top: 24px; font-size: 13px; color: #94a3b8; }
+      input {
+        width: 100%;
+        margin-top: 8px;
+        padding: 14px 16px;
+        border-radius: 14px;
+        border: 1px solid #334155;
+        background: #020617;
+        color: #e2e8f0;
+        font-size: 16px;
+      }
+      input:focus { outline: none; border-color: #10b981; }
+      button {
+        width: 100%;
+        margin-top: 16px;
+        padding: 14px;
+        border: none;
+        border-radius: 14px;
+        background: #059669;
+        color: #fff;
+        font-size: 16px;
+        font-weight: 500;
+      }
+      .err { margin-top: 12px; font-size: 13px; color: #fb7185; display: none; }
+      .hint { margin-top: 20px; font-size: 12px; color: #475569; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>OpenController<span>Finance</span></h1>
+      <p>Conecte ao servidor rodando no seu PC (mesma rede Wi-Fi).</p>
+      <label for="url">Endereço do servidor</label>
+      <input id="url" type="url" inputmode="url" autocapitalize="off" autocorrect="off" />
+      <button id="go">Conectar</button>
+      <div class="err" id="err">Não foi possível conectar. Confira se o PC está ligado, na mesma rede, e rodando <b>npm run start:lan</b>.</div>
+      <div class="hint">No PC: <b>npm run build</b> e depois <b>npm run start:lan</b>. O endereço fica salvo neste aparelho.</div>
+    </div>
+    <script>
+      const DEFAULT_URL = "http://10.0.0.180:3000";
+      const input = document.getElementById("url");
+      const err = document.getElementById("err");
+      input.value = localStorage.getItem("ocf_server_url") || DEFAULT_URL;
+
+      async function connect(auto) {
+        let url = input.value.trim().replace(/\/+$/, "");
+        if (!url) return;
+        if (!/^https?:\/\//.test(url)) url = "http://" + url;
+        try {
+          const controller = new AbortController();
+          setTimeout(() => controller.abort(), 4000);
+          await fetch(url + "/favicon.ico", { signal: controller.signal, mode: "no-cors" });
+          localStorage.setItem("ocf_server_url", url);
+          window.location.href = url;
+        } catch {
+          err.style.display = "block";
+          if (auto) input.focus();
+        }
+      }
+
+      document.getElementById("go").addEventListener("click", () => connect(false));
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") connect(false); });
+      // tenta conectar sozinho se já tem endereço salvo
+      if (localStorage.getItem("ocf_server_url")) connect(true);
+    </script>
+  </body>
+</html>

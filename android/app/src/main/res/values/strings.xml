@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">OpenControllerFinance</string>
+    <string name="title_activity_main">OpenControllerFinance</string>
+    <string name="package_name">br.com.opencontrollerfinance</string>
+    <string name="custom_url_scheme">br.com.opencontrollerfinance</string>
+</resources>
