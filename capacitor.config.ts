@@ -7,7 +7,7 @@ const config: CapacitorConfig = {
   server: {
     // o app navega para o servidor local (http) na rede Wi-Fi
     cleartext: true,
-    allowNavigation: ["10.*", "192.168.*", "172.16.*", "*.local"],
+    allowNavigation: ["10.*", "192.168.*", "172.16.*", "*.local", "*.vercel.app"],
   },
   android: {
     allowMixedContent: true,

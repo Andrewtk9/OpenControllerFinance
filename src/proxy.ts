@@ -17,6 +17,8 @@ export async function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
   if (pathname === "/login") return NextResponse.next();
+  // /api/sync tem autenticação própria via CRON_SECRET
+  if (pathname.startsWith("/api/")) return NextResponse.next();
 
   const expected = await sha256Hex(password);
   const cookie = request.cookies.get("ocf_auth")?.value;
