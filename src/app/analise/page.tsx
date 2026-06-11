@@ -9,6 +9,7 @@ import {
   EmptyState,
   PageHeader,
 } from "@/components/ui";
+import { OnboardingGate } from "@/app/onboarding-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +45,7 @@ export default async function AnalisePage({
 }: {
   searchParams: SearchParams;
 }) {
+  await OnboardingGate();
   const sp = await searchParams;
   const periodoRaw = Array.isArray(sp.periodo) ? sp.periodo[0] : sp.periodo;
   const period =

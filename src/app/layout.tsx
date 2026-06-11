@@ -27,8 +27,11 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   let unreadCount = 0;
+  let plan = "free";
   try {
     unreadCount = await prisma.notification.count({ where: { read: false } });
+    const settings = await prisma.settings.findUnique({ where: { id: 1 } });
+    if (settings) plan = settings.plan;
   } catch {
     // DB ainda não criado — segue sem badge
   }
@@ -39,7 +42,7 @@ export default async function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col bg-slate-950 text-slate-200">
-        <Nav unreadCount={unreadCount} />
+        <Nav unreadCount={unreadCount} plan={plan} />
         <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8">
           {children}
         </main>

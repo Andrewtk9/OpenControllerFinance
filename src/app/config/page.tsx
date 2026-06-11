@@ -10,6 +10,7 @@ import {
   saveSettings,
   toggleRecurringExpense,
 } from "@/app/actions";
+import { OnboardingGate } from "@/app/onboarding-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,7 @@ const inputClass =
   "rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200 outline-none focus:border-emerald-500";
 
 export default async function ConfigPage() {
+  await OnboardingGate();
   const [settings, recurring, rules, accounts] = await Promise.all([
     getSettings(),
     prisma.recurringExpense.findMany({ orderBy: { dayOfMonth: "asc" } }),

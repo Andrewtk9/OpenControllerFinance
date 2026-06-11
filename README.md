@@ -184,6 +184,10 @@ Sim. O Open Finance Brasil é o sistema **oficial regulado pelo Banco Central (B
 **Quais as limitações?**
 O Open Finance via Pluggy cobre contas, transações, cartões e posição de investimentos dos 5 bancos suportados, mas **não fornece o extrato detalhado das movimentações de investimentos**.
 
+## 🔒 Segurança
+
+Os dados ficam **somente na sua máquina** — o app escuta apenas em `127.0.0.1` (não fica acessível pela rede), não tem telemetria, e as únicas conexões de saída são a API da Pluggy e, se você configurar, o Telegram. Leia o [SECURITY.md](SECURITY.md) para o modelo de ameaças completo e boas práticas (backup criptografado do `dev.db`, revogação de consentimentos, etc).
+
 ## 🗺️ Roadmap
 
 - [ ] PWA / widget mobile

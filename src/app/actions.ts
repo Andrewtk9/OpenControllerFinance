@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { CATEGORIES } from "@/components/categories";
 
@@ -15,7 +16,7 @@ export async function updateTransactionCategory(
   category: string
 ) {
   if (!isValidCategory(category)) return;
-  await prisma.transaction.update({
+  await prisma.transaction.updateMany({
     where: { id: transactionId },
     data: { category, categorySource: "manual" },
   });
@@ -200,7 +201,7 @@ export async function deleteCategoryRule(formData: FormData) {
 export async function markNotificationRead(formData: FormData) {
   const id = parseInt(String(formData.get("id") ?? ""), 10);
   if (!Number.isInteger(id)) return;
-  await prisma.notification.update({ where: { id }, data: { read: true } });
+  await prisma.notification.updateMany({ where: { id }, data: { read: true } });
   revalidatePath("/notificacoes");
   revalidatePath("/", "layout");
 }
@@ -211,5 +212,52 @@ export async function markAllNotificationsRead() {
     data: { read: true },
   });
   revalidatePath("/notificacoes");
+  revalidatePath("/", "layout");
+}
+
+// ---------- Onboarding e planos ----------
+
+const PROFILE_TYPES = ["personal", "business"] as const;
+const PLANS = ["free", "pro", "business"] as const;
+const BILLINGS = ["monthly", "yearly"] as const;
+
+// Primeiro acesso: grava o tipo de perfil (Pessoa Física ou Empresa).
+// Empresa é direcionada para /planos (sugestão do plano Empresa), mas o
+// plano permanece "free" até o usuário ativar manualmente em /planos.
+export async function setProfileType(formData: FormData) {
+  const profileType = String(formData.get("profileType") ?? "");
+  if (!(PROFILE_TYPES as readonly string[]).includes(profileType)) return;
+
+  await prisma.settings.upsert({
+    where: { id: 1 },
+    update: { profileType },
+    create: { id: 1, profileType },
+  });
+
+  revalidatePath("/", "layout");
+  redirect(profileType === "business" ? "/planos" : "/");
+}
+
+// Troca de plano LOCAL/MANUAL — ainda sem integração de pagamento
+// (Mercado Pago/Stripe virá no futuro). Apenas grava em Settings.
+export async function choosePlan(formData: FormData) {
+  const plan = String(formData.get("plan") ?? "");
+  const billing = String(formData.get("billing") ?? "");
+  if (!(PLANS as readonly string[]).includes(plan)) return;
+
+  const planBilling =
+    plan === "free"
+      ? null
+      : (BILLINGS as readonly string[]).includes(billing)
+        ? billing
+        : "monthly";
+
+  await prisma.settings.upsert({
+    where: { id: 1 },
+    update: { plan, planBilling },
+    create: { id: 1, plan, planBilling },
+  });
+
+  revalidatePath("/planos");
   revalidatePath("/", "layout");
 }

@@ -2,10 +2,12 @@ import { prisma } from "@/lib/db";
 import { formatBRL } from "@/lib/budget";
 import { Card, CardTitle, EmptyState, PageHeader } from "@/components/ui";
 import { formatDate } from "@/components/format";
+import { OnboardingGate } from "@/app/onboarding-gate";
 
 export const dynamic = "force-dynamic";
 
 export default async function FaturasPage() {
+  await OnboardingGate();
   const cards = await prisma.account.findMany({
     where: { type: "CREDIT" },
     include: { bills: { orderBy: { dueDate: "desc" } } },

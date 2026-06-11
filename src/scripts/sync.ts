@@ -299,7 +299,17 @@ async function main() {
   }
 
   const client = getPluggyClient();
-  const itemIds = getItemIds();
+  let itemIds = getItemIds();
+
+  // Limite do plano Grátis: até 3 bancos conectados
+  const settings = await getSettings();
+  if (settings.plan === "free" && itemIds.length > 3) {
+    console.warn(
+      "⚠️ Plano Grátis permite 3 bancos — sincronizando apenas os 3 primeiros. Veja /planos para ilimitado."
+    );
+    itemIds = itemIds.slice(0, 3);
+  }
+
   const dbRules: DbRule[] = await prisma.categoryRule.findMany({
     orderBy: { priority: "desc" },
     select: { pattern: true, category: true, priority: true },

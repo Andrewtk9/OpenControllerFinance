@@ -87,12 +87,16 @@ model RecurringExpense {
 
 // Configuração única (linha id=1)
 model Settings {
-  id             Int    @id @default(1)
-  budgetMode     String @default("goal") // goal | avg_income | fixed_income
+  id             Int     @id @default(1)
+  budgetMode     String  @default("goal") // goal | avg_income | fixed_income
   goalAmount     Float? // usado em mode=goal
   fixedIncome    Float? // usado em mode=fixed_income
-  savingsPercent Float  @default(20) // em modos de renda: orçamento = renda * (1 - savingsPercent/100)
-  alertThreshold Int    @default(80) // % do orçamento para disparar alerta
+  savingsPercent Float   @default(20) // em modos de renda: orçamento = renda * (1 - savingsPercent/100)
+  alertThreshold Int     @default(80) // % do orçamento para disparar alerta
+  // onboarding e plano
+  profileType    String? // personal | business — null = onboarding pendente
+  plan           String  @default("free") // free (3 bancos) | pro (ilimitado) | business (ilimitado + contabilidade)
+  planBilling    String? // monthly | yearly
 }
 
 // Alertas gerados (limite do mês, fatura perto do vencimento...)

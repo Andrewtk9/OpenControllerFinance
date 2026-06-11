@@ -53,10 +53,12 @@ export async function sendTelegram(text: string): Promise<void> {
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       console.warn(
-        `[notify] Falha ao enviar Telegram (HTTP ${res.status}): ${body}`
+        `[notify] Falha ao enviar Telegram (HTTP ${res.status}): ${body.replaceAll(token, "***")}`
       );
     }
   } catch (error) {
-    console.warn("[notify] Erro ao enviar Telegram:", error);
+    // não logar o erro cru: a URL do undici contém o token do bot
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[notify] Erro ao enviar Telegram: ${msg.replaceAll(token, "***")}`);
   }
 }

@@ -5,6 +5,7 @@ import {
   markAllNotificationsRead,
   markNotificationRead,
 } from "@/app/actions";
+import { OnboardingGate } from "@/app/onboarding-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,7 @@ const TYPE_ICONS: Record<string, string> = {
 };
 
 export default async function NotificacoesPage() {
+  await OnboardingGate();
   const notifications = await prisma.notification.findMany({
     orderBy: { createdAt: "desc" },
   });

@@ -21,6 +21,7 @@ import {
   formatDateTime,
   monthLabel,
 } from "@/components/format";
+import { OnboardingGate } from "@/app/onboarding-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +32,7 @@ const MODE_LABELS: Record<string, string> = {
 };
 
 export default async function DashboardPage() {
+  await OnboardingGate();
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
@@ -226,6 +228,58 @@ export default async function DashboardPage() {
           </p>
         </Card>
       </div>
+
+      {/* Visão do negócio (apenas perfil Empresa) */}
+      {settings.profileType === "business" && (
+        <section>
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+            <CardTitle>Visão do negócio</CardTitle>
+            <Link
+              href="/aprenda"
+              className="text-xs font-medium text-emerald-400 hover:underline"
+            >
+              Entenda a diferença entre faturamento e lucro →
+            </Link>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Card>
+              <CardTitle>Faturamento do mês</CardTitle>
+              <p className="mt-2 text-2xl font-bold text-emerald-400">
+                {formatBRL(summary.income)}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                tudo que entrou pela atividade
+              </p>
+            </Card>
+            <Card>
+              <CardTitle>Saídas do mês</CardTitle>
+              <p className="mt-2 text-2xl font-bold text-rose-400">
+                {formatBRL(summary.spent)}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                custos, despesas, impostos e taxas
+              </p>
+            </Card>
+            <Card>
+              <CardTitle>Resultado do mês</CardTitle>
+              <p
+                className={`mt-2 text-2xl font-bold ${
+                  summary.income - summary.spent >= 0
+                    ? "text-emerald-400"
+                    : "text-rose-400"
+                }`}
+              >
+                {formatBRL(summary.income - summary.spent)}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                {summary.income > 0
+                  ? `margem de ${(((summary.income - summary.spent) / summary.income) * 100).toFixed(1)}%`
+                  : "sem ganhos registrados neste mês"}
+              </p>
+            </Card>
+          </div>
+        </section>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Top 5 categorias */}

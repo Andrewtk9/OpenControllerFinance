@@ -12,6 +12,7 @@ import {
   shiftMonth,
 } from "@/components/format";
 import { createRuleFromTransaction } from "@/app/actions";
+import { OnboardingGate } from "@/app/onboarding-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +45,7 @@ export default async function TransacoesPage({
 }: {
   searchParams: SearchParams;
 }) {
+  await OnboardingGate();
   const sp = await searchParams;
   const { year, month } = parseMonthParam(asString(sp.mes));
   const categoria = asString(sp.categoria) || undefined;

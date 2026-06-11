@@ -8,10 +8,24 @@ const LINKS = [
   { href: "/transacoes", label: "Transações", icon: "⇄" },
   { href: "/faturas", label: "Faturas", icon: "▤" },
   { href: "/analise", label: "Análise", icon: "◔" },
+  { href: "/aprenda", label: "Aprenda", icon: "✦" },
+  { href: "/planos", label: "Planos", icon: "◆" },
   { href: "/config", label: "Configurações", icon: "⚙" },
 ];
 
-export function Nav({ unreadCount }: { unreadCount: number }) {
+const PLAN_LABELS: Record<string, string> = {
+  free: "Grátis",
+  pro: "Pro",
+  business: "Empresa",
+};
+
+export function Nav({
+  unreadCount,
+  plan = "free",
+}: {
+  unreadCount: number;
+  plan?: string;
+}) {
   const pathname = usePathname();
 
   return (
@@ -30,6 +44,18 @@ export function Nav({ unreadCount }: { unreadCount: number }) {
           <span className="sm:hidden">
             OC<span className="text-emerald-400">F</span>
           </span>
+        </Link>
+
+        <Link
+          href="/planos"
+          title="Seu plano — ver planos"
+          className={`mr-1 hidden whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold transition-colors md:inline-block ${
+            plan === "free"
+              ? "border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
+              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:border-emerald-400"
+          }`}
+        >
+          {PLAN_LABELS[plan] ?? plan}
         </Link>
 
         <nav className="flex flex-1 items-center gap-1 overflow-x-auto">
