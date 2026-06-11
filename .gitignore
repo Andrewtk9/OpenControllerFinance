@@ -35,7 +35,7 @@ yarn-error.log*
 !.env.example
 
 # credenciais embutidas no APK pessoal — NUNCA commitar
-mobile-shell/config.local.js
+public/config.local.js
 
 # banco de dados local — NUNCA commitar (contém dados financeiros)
 *.db

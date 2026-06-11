@@ -129,9 +129,37 @@ export const DEFAULT_SETTINGS: Settings = {
   plan: "free",
 };
 
+// credenciais embutidas no APK via public/config.local.js (fora do git)
+interface BakedConfig {
+  pluggyClientId?: string;
+  pluggyClientSecret?: string;
+  pluggyItemIds?: string;
+}
+
+function bakedConfig(): BakedConfig {
+  if (typeof window === "undefined") return {};
+  return (window as unknown as { OCF_CONFIG?: BakedConfig }).OCF_CONFIG ?? {};
+}
+
 export async function getSettings(): Promise<Settings> {
+  const baked = bakedConfig();
   const existing = await db.settings.get(1);
-  if (existing) return existing;
-  await db.settings.put(DEFAULT_SETTINGS);
-  return DEFAULT_SETTINGS;
+  if (existing) {
+    // preenche credenciais embutidas se ainda não configuradas manualmente
+    const fill: Partial<Settings> = {};
+    if (!existing.pluggyClientId && baked.pluggyClientId)
+      fill.pluggyClientId = baked.pluggyClientId;
+    if (!existing.pluggyClientSecret && baked.pluggyClientSecret)
+      fill.pluggyClientSecret = baked.pluggyClientSecret;
+    if (!existing.pluggyItemIds && baked.pluggyItemIds)
+      fill.pluggyItemIds = baked.pluggyItemIds;
+    if (Object.keys(fill).length > 0) {
+      await db.settings.update(1, fill);
+      return { ...existing, ...fill };
+    }
+    return existing;
+  }
+  const seeded: Settings = { ...DEFAULT_SETTINGS, ...baked };
+  await db.settings.put(seeded);
+  return seeded;
 }

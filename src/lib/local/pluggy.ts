@@ -159,6 +159,21 @@ export async function fetchItem(id: string): Promise<PluggyItem> {
   return (await apiGet(`/items/${id}`, {}, `buscar item ${id}`)) as PluggyItem;
 }
 
+/** Token de acesso para abrir o widget Pluggy Connect dentro do app. */
+export async function createConnectToken(): Promise<string> {
+  const res = await CapacitorHttp.post({
+    url: `${BASE_URL}/connect_token`,
+    headers: authHeaders(),
+    data: {},
+  });
+  ensureOk(res, "criar connect token");
+  const data = parseData(res);
+  if (!data || typeof data.accessToken !== "string") {
+    throw new Error("Pluggy: resposta de /connect_token não contém accessToken.");
+  }
+  return data.accessToken;
+}
+
 export async function fetchAccounts(itemId: string): Promise<PluggyAccount[]> {
   const data = await apiGet(
     "/accounts",

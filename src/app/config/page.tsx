@@ -11,6 +11,7 @@ import {
 import { formatBRL } from "@/lib/local/budget";
 import { CATEGORIES } from "@/components/categories";
 import { Card, CardTitle, CategoryBadge, PageHeader } from "@/components/ui";
+import { ConnectBankButton } from "@/components/connect-bank-button";
 
 const inputClass =
   "rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200 outline-none focus:border-emerald-500";
@@ -350,6 +351,16 @@ export default function ConfigPage() {
           Credenciais usadas para sincronizar contas, transações e faturas via
           Open Finance. Ficam salvas <strong>somente neste aparelho</strong>.
         </p>
+
+        <div className="mt-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+          <ConnectBankButton
+            onConnected={async () => {
+              const s = await getSettings();
+              setPluggyItemIds(s.pluggyItemIds ?? "");
+            }}
+          />
+        </div>
+
         <form onSubmit={saveConnection} className="mt-4 space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="text-sm">

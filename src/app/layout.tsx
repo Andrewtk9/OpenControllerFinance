@@ -28,6 +28,11 @@ export default function RootLayout({
       lang="pt-BR"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        {/* credenciais embutidas no APK pessoal (arquivo fora do git) */}
+        {/* eslint-disable-next-line @next/next/no-sync-scripts */}
+        <script src="/config.local.js"></script>
+      </head>
       <body className="flex min-h-full flex-col bg-slate-950 text-slate-200">
         <AppShell>{children}</AppShell>
       </body>
