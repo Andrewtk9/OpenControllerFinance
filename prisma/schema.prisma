@@ -1,0 +1,115 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Conta bancária ou cartão de crédito (1 por conta na Pluggy)
+model Account {
+  id             String   @id // pluggy account id
+  itemId         String // pluggy item id (conexão com o banco)
+  bankName       String // ex: Nubank, Itaú
+  type           String // BANK | CREDIT
+  subtype        String?
+  name           String
+  number         String?
+  balance        Float
+  currencyCode   String   @default("BRL")
+  // dados de cartão de crédito (null para contas correntes)
+  creditLimit    Float?
+  availableLimit Float?
+  closeDay       Int?
+  dueDay         Int?
+  updatedAt      DateTime @updatedAt
+
+  transactions Transaction[]
+  bills        CreditCardBill[]
+}
+
+// Transação sincronizada. Convenção de sinal: gasto = negativo, ganho = positivo.
+model Transaction {
+  id             String   @id // pluggy transaction id
+  accountId      String
+  account        Account  @relation(fields: [accountId], references: [id])
+  date           DateTime
+  description    String
+  amount         Float // gasto negativo, ganho positivo (normalizado no sync)
+  currencyCode   String   @default("BRL")
+  pluggyCategory String? // categoria original da Pluggy
+  category       String // categoria resolvida (regras > pluggy > "Outros")
+  categorySource String   @default("pluggy") // pluggy | rule | manual
+  status         String? // POSTED | PENDING
+  createdAt      DateTime @default(now())
+
+  @@index([date])
+  @@index([category])
+  @@index([accountId])
+}
+
+// Fatura de cartão de crédito
+model CreditCardBill {
+  id             String    @id // pluggy bill id
+  accountId      String
+  account        Account   @relation(fields: [accountId], references: [id])
+  dueDate        DateTime
+  closeDate      DateTime?
+  totalAmount    Float
+  minimumPayment Float?
+  paid           Boolean   @default(false)
+  updatedAt      DateTime  @updatedAt
+
+  @@index([dueDate])
+}
+
+// Regra de categorização própria: pattern (substring, case-insensitive) na descrição
+model CategoryRule {
+  id       Int    @id @default(autoincrement())
+  pattern  String
+  category String
+  priority Int    @default(0) // maior vence
+
+  @@index([priority])
+}
+
+// Gasto recorrente manual (assinatura, aluguel...) — conta no orçamento do mês
+model RecurringExpense {
+  id         Int      @id @default(autoincrement())
+  name       String
+  amount     Float // sempre positivo
+  dayOfMonth Int // dia do mês em que ocorre
+  category   String
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+}
+
+// Configuração única (linha id=1)
+model Settings {
+  id             Int    @id @default(1)
+  budgetMode     String @default("goal") // goal | avg_income | fixed_income
+  goalAmount     Float? // usado em mode=goal
+  fixedIncome    Float? // usado em mode=fixed_income
+  savingsPercent Float  @default(20) // em modos de renda: orçamento = renda * (1 - savingsPercent/100)
+  alertThreshold Int    @default(80) // % do orçamento para disparar alerta
+}
+
+// Alertas gerados (limite do mês, fatura perto do vencimento...)
+model Notification {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+  type      String // budget_alert | budget_exceeded | bill_due
+  dedupeKey String   @unique // evita alerta repetido (ex: budget_alert-2026-06)
+  title     String
+  body      String
+  read      Boolean  @default(false)
+}
+
+model SyncLog {
+  id              Int      @id @default(autoincrement())
+  ranAt           DateTime @default(now())
+  status          String // ok | error
+  newTransactions Int      @default(0)
+  message         String?
+}

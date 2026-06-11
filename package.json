@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "open-controller-finance",
   "version": "0.1.0",
   "private": true,
@@ -6,10 +6,17 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "db:seed": "tsx src/scripts/seed-rules.ts",
+    "sync": "tsx src/scripts/sync.ts"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "dotenv": "^17.4.2",
     "next": "16.2.9",
+    "pluggy-sdk": "^0.87.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
@@ -20,7 +27,9 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
+    "prisma": "^6.19.3",
     "tailwindcss": "^4",
+    "tsx": "^4.22.4",
     "typescript": "^5"
   }
 }
