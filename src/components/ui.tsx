@@ -1,4 +1,4 @@
-import { formatBRL } from "@/lib/budget";
+import { formatBRL } from "@/lib/local/budget";
 import { categoryBadgeClasses } from "./categories";
 
 export function Card({

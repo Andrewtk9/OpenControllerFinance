@@ -1,19 +1,26 @@
-import type {
-  Account as PluggyAccount,
-  Transaction as PluggyTransaction,
-} from "pluggy-sdk";
-import { prisma } from "./db";
 import {
-  getPluggyClient,
-  getItemIds,
-  hasPluggyCredentials,
+  db,
+  getSettings,
+  type Account,
+  type CreditCardBill,
+  type Transaction,
+} from "./db";
+import {
+  pluggyAuth,
+  fetchItem,
+  fetchAccounts,
+  fetchTransactions,
+  fetchBills,
+  type PluggyAccount,
+  type PluggyTransaction,
 } from "./pluggy";
-import { categorize, type DbRule } from "./categorize";
+import { categorize, type DbRule } from "../categorize";
 import { createNotification, sendTelegram } from "./notify";
-import { getMonthlySummary, getSettings, formatBRL } from "./budget";
+import { getMonthlySummary, formatBRL } from "./budget";
 
 const FIRST_SYNC_DAYS = 90; // janela inicial
 const RESYNC_OVERLAP_DAYS = 7; // sobreposição para pegar atualizações
+const TX_PAGE_SIZE = 500;
 
 export interface SyncResult {
   status: "ok" | "error" | "partial";
@@ -23,15 +30,17 @@ export interface SyncResult {
   message: string;
 }
 
+type Progress = (msg: string) => void;
+
 /**
  * Lançado quando as credenciais da Pluggy (ou os item ids) não estão
- * configuradas. Quem decide como sair (process.exit, HTTP 503, etc.) é o
- * chamador.
+ * configuradas em Settings. Quem decide como reagir (abrir a tela de
+ * configurações, mostrar aviso, etc.) é o chamador.
  */
 export class MissingPluggyCredentialsError extends Error {
   constructor() {
     super(
-      "Credenciais da Pluggy não configuradas. Defina PLUGGY_CLIENT_ID, PLUGGY_CLIENT_SECRET e PLUGGY_ITEM_IDS."
+      "Credenciais da Pluggy não configuradas. Informe Client ID, Client Secret e Item IDs nas configurações."
     );
     this.name = "MissingPluggyCredentialsError";
   }
@@ -47,6 +56,13 @@ function daysAgo(days: number, from = new Date()): Date {
   return d;
 }
 
+function parseItemIds(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /**
  * Convenção de sinal do DB: gasto = NEGATIVO, ganho = POSITIVO.
  * - Conta bancária (BANK): a Pluggy marca a direção em `type` (DEBIT = saída,
@@ -54,10 +70,7 @@ function daysAgo(days: number, from = new Date()): Date {
  * - Cartão (CREDIT): a Pluggy costuma trazer compra com valor POSITIVO e
  *   pagamento/estorno NEGATIVO — então invertemos o sinal.
  */
-function normalizeAmount(
-  accountType: string,
-  tx: PluggyTransaction
-): number {
+function normalizeAmount(accountType: string, tx: PluggyTransaction): number {
   const raw = tx.amount ?? 0;
   if (accountType === "CREDIT") {
     return -raw;
@@ -68,59 +81,90 @@ function normalizeAmount(
   return raw;
 }
 
-async function upsertAccount(itemId: string, bankName: string, acc: PluggyAccount) {
+function toAccountRecord(
+  itemId: string,
+  bankName: string,
+  acc: PluggyAccount
+): Account {
   const credit = acc.creditData;
   const closeDay = credit?.balanceCloseDate
     ? new Date(credit.balanceCloseDate).getDate()
-    : null;
+    : undefined;
   const dueDay = credit?.balanceDueDate
     ? new Date(credit.balanceDueDate).getDate()
-    : null;
+    : undefined;
 
-  const data = {
+  return {
+    id: acc.id,
     itemId,
     bankName,
-    type: acc.type,
-    subtype: acc.subtype ?? null,
+    type: acc.type === "CREDIT" ? "CREDIT" : "BANK",
+    subtype: acc.subtype ?? undefined,
     name: acc.name,
-    number: acc.number ?? null,
+    number: acc.number ?? undefined,
     balance: acc.balance ?? 0,
     currencyCode: acc.currencyCode ?? "BRL",
-    creditLimit: credit?.creditLimit ?? null,
-    availableLimit: credit?.availableCreditLimit ?? null,
+    creditLimit: credit?.creditLimit ?? undefined,
+    availableLimit: credit?.availableCreditLimit ?? undefined,
     closeDay,
     dueDay,
+    updatedAt: new Date().toISOString(),
   };
+}
 
-  await prisma.account.upsert({
-    where: { id: acc.id },
-    update: data,
-    create: { id: acc.id, ...data },
-  });
+async function fetchAllTransactions(
+  accountId: string,
+  from: string
+): Promise<PluggyTransaction[]> {
+  const all: PluggyTransaction[] = [];
+  let page = 1;
+  let totalPages = 1;
+  do {
+    const res = await fetchTransactions(accountId, {
+      from,
+      page,
+      pageSize: TX_PAGE_SIZE,
+    });
+    all.push(...(res.results ?? []));
+    totalPages = res.totalPages ?? 1;
+    page++;
+  } while (page <= totalPages);
+  return all;
 }
 
 async function syncTransactions(
   acc: PluggyAccount,
-  dbRules: DbRule[]
+  dbRules: DbRule[],
+  log: Progress
 ): Promise<number> {
-  const client = getPluggyClient();
-
   // from = 90 dias atrás na 1ª execução; depois, última transação - 7 dias
-  const latest = await prisma.transaction.findFirst({
-    where: { accountId: acc.id },
-    orderBy: { date: "desc" },
-    select: { date: true },
-  });
-  const fromDate = latest
-    ? daysAgo(RESYNC_OVERLAP_DAYS, latest.date)
+  const existingForAccount = await db.transactions
+    .where("accountId")
+    .equals(acc.id)
+    .toArray();
+  let latestDate: string | null = null;
+  for (const t of existingForAccount) {
+    if (!latestDate || t.date > latestDate) latestDate = t.date;
+  }
+  const fromDate = latestDate
+    ? daysAgo(RESYNC_OVERLAP_DAYS, new Date(latestDate))
     : daysAgo(FIRST_SYNC_DAYS);
   const dateFrom = toISODate(fromDate);
 
-  console.log(`    Buscando transações desde ${dateFrom}...`);
-  const transactions = await client.fetchAllTransactions(acc.id, { dateFrom });
-  console.log(`    ${transactions.length} transações retornadas pela Pluggy`);
+  log(`    Buscando transações desde ${dateFrom}...`);
+  const transactions = await fetchAllTransactions(acc.id, dateFrom);
+  log(`    ${transactions.length} transações retornadas pela Pluggy`);
+
+  // lê as existentes antes do bulkPut para preservar categorias manuais
+  const ids = transactions.map((tx) => tx.id);
+  const existingList = await db.transactions.bulkGet(ids);
+  const existingMap = new Map<string, Transaction>();
+  existingList.forEach((e) => {
+    if (e) existingMap.set(e.id, e);
+  });
 
   let newCount = 0;
+  const records: Transaction[] = [];
   for (const tx of transactions) {
     const amount = normalizeAmount(acc.type, tx);
     const { category, source } = categorize(
@@ -129,82 +173,68 @@ async function syncTransactions(
       dbRules
     );
 
-    const existing = await prisma.transaction.findUnique({
-      where: { id: tx.id },
-      select: { id: true, categorySource: true },
-    });
+    const existing = existingMap.get(tx.id);
+    if (!existing) newCount++;
+    // não sobrescreve categoria ajustada manualmente pelo usuário
+    const keepManual = existing?.categorySource === "manual";
 
-    const base = {
+    records.push({
+      id: tx.id,
       accountId: acc.id,
-      date: new Date(tx.date),
+      date: new Date(tx.date).toISOString(),
       description: tx.description ?? tx.descriptionRaw ?? "",
       amount,
       currencyCode: tx.currencyCode ?? "BRL",
       pluggyCategory: tx.category ?? null,
-      status: tx.status ?? null,
-    };
-
-    if (!existing) {
-      await prisma.transaction.create({
-        data: { id: tx.id, ...base, category, categorySource: source },
-      });
-      newCount++;
-    } else {
-      // não sobrescreve categoria ajustada manualmente pelo usuário
-      const keepManual = existing.categorySource === "manual";
-      await prisma.transaction.update({
-        where: { id: tx.id },
-        data: keepManual
-          ? base
-          : { ...base, category, categorySource: source },
-      });
-    }
+      category: keepManual && existing ? existing.category : category,
+      categorySource: keepManual ? "manual" : source,
+      status: tx.status ?? undefined,
+    });
   }
+
+  await db.transactions.bulkPut(records);
   return newCount;
 }
 
-async function syncBills(acc: PluggyAccount): Promise<void> {
-  const client = getPluggyClient();
+async function syncBills(acc: PluggyAccount, log: Progress): Promise<void> {
   try {
-    const page = await client.fetchCreditCardBills(acc.id, { pageSize: 100 });
-    const bills = page.results ?? [];
-    console.log(`    ${bills.length} faturas retornadas pela Pluggy`);
+    const bills = await fetchBills(acc.id);
+    log(`    ${bills.length} faturas retornadas pela Pluggy`);
 
-    for (const bill of bills) {
+    const records: CreditCardBill[] = bills.map((bill) => {
       const payments = bill.payments ?? [];
       const paymentsTotal = payments.reduce(
         (sum, p) => sum + Math.abs(p.amount ?? 0),
         0
       );
+      const totalAmount = bill.totalAmount ?? 0;
       const paid =
         payments.some((p) => p.valueType === "FULL_PAYMENT") ||
-        (bill.totalAmount > 0 && paymentsTotal >= bill.totalAmount - 0.01);
+        (totalAmount > 0 && paymentsTotal >= totalAmount - 0.01);
 
-      const data = {
+      return {
+        id: bill.id,
         accountId: acc.id,
-        dueDate: new Date(bill.dueDate),
-        totalAmount: bill.totalAmount ?? 0,
+        dueDate: new Date(bill.dueDate).toISOString(),
+        // closeDate não vem na API de bills da Pluggy — fica null
+        closeDate: null,
+        totalAmount,
         minimumPayment: bill.minimumPaymentAmount ?? null,
         paid,
       };
+    });
 
-      await prisma.creditCardBill.upsert({
-        where: { id: bill.id },
-        update: data,
-        // closeDate não vem na API de bills da Pluggy — fica null
-        create: { id: bill.id, ...data, closeDate: null },
-      });
-    }
+    await db.bills.bulkPut(records);
   } catch (error) {
     // alguns conectores não expõem faturas — não pode abortar o resto
-    console.warn(
-      `    Aviso: não foi possível sincronizar faturas da conta ${acc.name}:`,
-      error instanceof Error ? error.message : error
+    const msg = error instanceof Error ? error.message : String(error);
+    log(
+      `    Aviso: não foi possível sincronizar faturas da conta ${acc.name}: ${msg}`
     );
   }
 }
 
-async function runAlerts(): Promise<void> {
+async function runAlerts(log: Progress): Promise<void> {
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
@@ -229,7 +259,7 @@ async function runAlerts(): Promise<void> {
         )}% do orçamento de ${formatBRL(summary.budget)}).`,
       });
       if (created) {
-        console.log("  Alerta criado: orçamento estourado");
+        log("  Alerta criado: orçamento estourado");
         await sendTelegram(
           `🚨 Orçamento estourado!\nVocê gastou ${formatBRL(
             summary.spent
@@ -248,7 +278,7 @@ async function runAlerts(): Promise<void> {
         )} de ${formatBRL(summary.budget)}).`,
       });
       if (created) {
-        console.log("  Alerta criado: limiar de orçamento atingido");
+        log("  Alerta criado: limiar de orçamento atingido");
         await sendTelegram(
           `⚠️ Atenção ao orçamento\nVocê já usou ${pct.toFixed(
             0
@@ -266,28 +296,27 @@ async function runAlerts(): Promise<void> {
   in3Days.setDate(in3Days.getDate() + 3);
   in3Days.setHours(23, 59, 59, 999);
 
-  const dueBills = await prisma.creditCardBill.findMany({
-    where: {
-      paid: false,
-      dueDate: { gte: startOfToday, lte: in3Days },
-    },
-    include: { account: true },
+  const allBills = await db.bills.toArray();
+  const dueBills = allBills.filter((bill) => {
+    if (bill.paid) return false;
+    const due = new Date(bill.dueDate);
+    return due >= startOfToday && due <= in3Days;
   });
 
   for (const bill of dueBills) {
-    const dueStr = bill.dueDate.toLocaleDateString("pt-BR");
+    const account = await db.accounts.get(bill.accountId);
+    const bankName = account?.bankName ?? "cartão";
+    const dueStr = new Date(bill.dueDate).toLocaleDateString("pt-BR");
     const created = await createNotification({
       type: "bill_due",
       dedupeKey: `bill_due-${bill.id}`,
-      title: `Fatura do ${bill.account.bankName} vence em breve`,
+      title: `Fatura do ${bankName} vence em breve`,
       body: `Fatura de ${formatBRL(bill.totalAmount)} vence em ${dueStr}.`,
     });
     if (created) {
-      console.log(
-        `  Alerta criado: fatura do ${bill.account.bankName} vence ${dueStr}`
-      );
+      log(`  Alerta criado: fatura do ${bankName} vence ${dueStr}`);
       await sendTelegram(
-        `💳 Fatura do ${bill.account.bankName} vence em ${dueStr}: ${formatBRL(
+        `💳 Fatura do ${bankName} vence em ${dueStr}: ${formatBRL(
           bill.totalAmount
         )}.`
       );
@@ -295,24 +324,34 @@ async function runAlerts(): Promise<void> {
   }
 }
 
-async function doSync(): Promise<SyncResult> {
-  const client = getPluggyClient();
-  let itemIds = getItemIds();
+async function doSync(
+  clientId: string,
+  clientSecret: string,
+  allItemIds: string[],
+  log: Progress
+): Promise<SyncResult> {
+  log("Autenticando na Pluggy...");
+  await pluggyAuth(clientId, clientSecret);
+
+  let itemIds = allItemIds;
 
   // Limite do plano Grátis: até 3 bancos conectados
   const settings = await getSettings();
   if (settings.plan === "free" && itemIds.length > 3) {
-    console.warn(
+    log(
       "⚠️ Plano Grátis permite 3 bancos — sincronizando apenas os 3 primeiros. Veja /planos para ilimitado."
     );
     itemIds = itemIds.slice(0, 3);
   }
 
-  const dbRules: DbRule[] = await prisma.categoryRule.findMany({
-    orderBy: { priority: "desc" },
-    select: { pattern: true, category: true, priority: true },
-  });
-  console.log(
+  const dbRules: DbRule[] = (
+    await db.rules.orderBy("priority").reverse().toArray()
+  ).map((r) => ({
+    pattern: r.pattern,
+    category: r.category,
+    priority: r.priority,
+  }));
+  log(
     `${itemIds.length} conexão(ões) configurada(s), ${dbRules.length} regra(s) de categoria no DB.\n`
   );
 
@@ -322,50 +361,52 @@ async function doSync(): Promise<SyncResult> {
 
   for (const itemId of itemIds) {
     try {
-      const item = await client.fetchItem(itemId);
+      const item = await fetchItem(itemId);
       const bankName = item.connector?.name ?? "Banco";
-      console.log(`Sincronizando ${bankName} (item ${itemId})...`);
+      log(`Sincronizando ${bankName} (item ${itemId})...`);
       if (item.status === "LOGIN_ERROR") {
-        console.warn(
+        log(
           `  Aviso: conexão com ${bankName} precisa ser atualizada (LOGIN_ERROR). Tentando ler dados existentes mesmo assim.`
         );
       }
 
-      const accountsPage = await client.fetchAccounts(itemId);
-      const accounts = accountsPage.results ?? [];
-      console.log(`  ${accounts.length} conta(s) encontrada(s).`);
+      const accounts = await fetchAccounts(itemId);
+      log(`  ${accounts.length} conta(s) encontrada(s).`);
+
+      await db.accounts.bulkPut(
+        accounts.map((acc) => toAccountRecord(itemId, bankName, acc))
+      );
 
       for (const acc of accounts) {
-        console.log(
+        log(
           `  Conta: ${acc.name} (${acc.type}) — saldo ${formatBRL(
             acc.balance ?? 0
           )}`
         );
-        await upsertAccount(itemId, bankName, acc);
 
-        const newTx = await syncTransactions(acc, dbRules);
+        const newTx = await syncTransactions(acc, dbRules, log);
         totalNew += newTx;
         accountCount++;
-        console.log(`    ${newTx} transação(ões) nova(s).`);
+        log(`    ${newTx} transação(ões) nova(s).`);
 
         if (acc.type === "CREDIT") {
-          await syncBills(acc);
+          await syncBills(acc, log);
         }
       }
-      console.log(`Concluído: ${bankName}.\n`);
+      log(`Concluído: ${bankName}.\n`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error(`Erro ao sincronizar item ${itemId}: ${msg}\n`);
+      log(`Erro ao sincronizar item ${itemId}: ${msg}\n`);
       errors.push(`item ${itemId}: ${msg}`);
     }
   }
 
-  console.log("Verificando alertas...");
+  log("Verificando alertas...");
   try {
-    await runAlerts();
+    await runAlerts(log);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    console.error(`Erro ao processar alertas: ${msg}`);
+    log(`Erro ao processar alertas: ${msg}`);
     errors.push(`alertas: ${msg}`);
   }
 
@@ -376,11 +417,14 @@ async function doSync(): Promise<SyncResult> {
       ? `Sincronizadas ${accountCount} conta(s), ${totalNew} transação(ões) nova(s).`
       : `Erros: ${errors.join(" | ")}`;
 
-  await prisma.syncLog.create({
-    data: { status, newTransactions: totalNew, message },
+  await db.synclogs.add({
+    ranAt: new Date().toISOString(),
+    status,
+    newTransactions: totalNew,
+    message,
   });
 
-  console.log(
+  log(
     `\n=== Sincronização finalizada (${status}): ${totalNew} transação(ões) nova(s) ===`
   );
 
@@ -394,29 +438,49 @@ async function doSync(): Promise<SyncResult> {
 }
 
 /**
- * Executa a sincronização completa: itens → contas → transações → faturas →
- * categorização → alertas → SyncLog.
+ * Executa a sincronização completa no aparelho: auth → itens → contas →
+ * transações → faturas → categorização → alertas → SyncLog.
  *
- * Lança MissingPluggyCredentialsError se as credenciais/itens da Pluggy não
- * estiverem configurados (quem decide sair/responder é o chamador). Qualquer
- * outro erro fatal é capturado, registrado no SyncLog e devolvido como
- * SyncResult com status "error".
+ * As credenciais vêm de Settings (pluggyClientId / pluggyClientSecret /
+ * pluggyItemIds). Lança MissingPluggyCredentialsError se não estiverem
+ * configuradas (quem decide como reagir é o chamador). Qualquer outro erro
+ * fatal é capturado, registrado no SyncLog e devolvido como SyncResult com
+ * status "error".
+ *
+ * @param onProgress recebe cada mensagem de progresso (além do console.log).
  */
-export async function runSync(): Promise<SyncResult> {
-  console.log("=== OpenControllerFinance — Sincronização Pluggy ===\n");
+export async function runSync(onProgress?: Progress): Promise<SyncResult> {
+  const log: Progress = (msg) => {
+    console.log(msg);
+    try {
+      onProgress?.(msg);
+    } catch {
+      // callback de progresso nunca derruba o sync
+    }
+  };
 
-  if (!hasPluggyCredentials() || getItemIds().length === 0) {
+  log("=== OpenControllerFinance — Sincronização Pluggy ===\n");
+
+  const settings = await getSettings();
+  const clientId = settings.pluggyClientId?.trim();
+  const clientSecret = settings.pluggyClientSecret?.trim();
+  const itemIds = parseItemIds(settings.pluggyItemIds);
+
+  if (!clientId || !clientSecret || itemIds.length === 0) {
     throw new MissingPluggyCredentialsError();
   }
 
   try {
-    return await doSync();
+    return await doSync(clientId, clientSecret, itemIds, log);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    console.error("Erro fatal na sincronização:", msg);
+    log(`Erro fatal na sincronização: ${msg}`);
     try {
-      await prisma.syncLog.create({
-        data: { status: "error", newTransactions: 0, message: msg },
+      await db.synclogs.add({
+        ranAt: new Date().toISOString(),
+        status: "error",
+        newTransactions: 0,
+        message: msg,
       });
     } catch {
       // ignora falha ao logar

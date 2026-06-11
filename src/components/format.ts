@@ -1,22 +1,28 @@
-// Helpers de formatação de datas (pt-BR). Datas vêm do sync em meia-noite UTC,
-// então formatamos em UTC para evitar deslocamento de um dia no fuso de Brasília.
-export function formatDate(date: Date) {
-  return date.toLocaleDateString("pt-BR", { timeZone: "UTC" });
+// Helpers de formatação de datas (pt-BR). Datas vêm do sync como strings ISO
+// (meia-noite UTC), então formatamos em UTC para evitar deslocamento de um dia
+// no fuso de Brasília. Aceitam Date ou string ISO (formato do banco local).
+function toDate(date: Date | string): Date {
+  return typeof date === "string" ? new Date(date) : date;
 }
 
-export function formatDateShort(date: Date) {
-  return date.toLocaleDateString("pt-BR", {
+export function formatDate(date: Date | string) {
+  return toDate(date).toLocaleDateString("pt-BR", { timeZone: "UTC" });
+}
+
+export function formatDateShort(date: Date | string) {
+  return toDate(date).toLocaleDateString("pt-BR", {
     day: "2-digit",
     month: "2-digit",
     timeZone: "UTC",
   });
 }
 
-export function formatDateTime(date: Date) {
+export function formatDateTime(date: Date | string) {
+  const d = toDate(date);
   return (
-    date.toLocaleDateString("pt-BR") +
+    d.toLocaleDateString("pt-BR") +
     " às " +
-    date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+    d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
   );
 }
 

@@ -1,29 +1,42 @@
-import { prisma } from "@/lib/db";
-import { formatBRL } from "@/lib/budget";
+"use client";
+
+import { useLiveQuery } from "dexie-react-hooks";
+import { db, type CreditCardBill } from "@/lib/local/db";
+import { formatBRL } from "@/lib/local/budget";
 import { Card, CardTitle, EmptyState, PageHeader } from "@/components/ui";
 import { formatDate } from "@/components/format";
-import { OnboardingGate } from "@/app/onboarding-gate";
 
-export const dynamic = "force-dynamic";
+export default function FaturasPage() {
+  const cards = useLiveQuery(
+    () => db.accounts.where("type").equals("CREDIT").toArray(),
+    []
+  );
+  const allBills = useLiveQuery(() => db.bills.toArray(), []);
 
-export default async function FaturasPage() {
-  await OnboardingGate();
-  const cards = await prisma.account.findMany({
-    where: { type: "CREDIT" },
-    include: { bills: { orderBy: { dueDate: "desc" } } },
-    orderBy: { bankName: "asc" },
-  });
+  if (!cards || !allBills) return null;
 
-  if (cards.length === 0) {
+  const sortedCards = [...cards].sort((a, b) =>
+    a.bankName.localeCompare(b.bankName, "pt-BR")
+  );
+
+  const billsByAccount = new Map<string, CreditCardBill[]>();
+  for (const bill of allBills) {
+    const list = billsByAccount.get(bill.accountId) ?? [];
+    list.push(bill);
+    billsByAccount.set(bill.accountId, list);
+  }
+  for (const list of billsByAccount.values()) {
+    list.sort((a, b) => (a.dueDate < b.dueDate ? 1 : a.dueDate > b.dueDate ? -1 : 0));
+  }
+
+  if (sortedCards.length === 0) {
     return (
       <div>
         <PageHeader title="Faturas" />
         <EmptyState title="Nenhum cartão de crédito conectado" icon="💳">
-          Quando você conectar um cartão de crédito via Open Finance e rodar{" "}
-          <code className="rounded bg-slate-800 px-1.5 py-0.5 text-xs">
-            npm run sync
-          </code>
-          , as faturas aparecerão aqui.
+          Quando você conectar um cartão de crédito via Open Finance nas{" "}
+          <span className="font-medium text-slate-300">Configurações</span> e
+          sincronizar, as faturas aparecerão aqui.
         </EmptyState>
       </div>
     );
@@ -33,14 +46,17 @@ export default async function FaturasPage() {
     <div className="space-y-6">
       <PageHeader
         title="Faturas"
-        subtitle={`${cards.length} ${cards.length === 1 ? "cartão de crédito" : "cartões de crédito"}`}
+        subtitle={`${sortedCards.length} ${sortedCards.length === 1 ? "cartão de crédito" : "cartões de crédito"}`}
       />
 
       <div className="grid gap-6 lg:grid-cols-2">
-        {cards.map((card) => {
-          const currentBill = card.bills.find((b) => !b.paid) ?? null;
+        {sortedCards.map((card) => {
+          const bills = billsByAccount.get(card.id) ?? [];
+          // Fatura atual: a mais recente ainda não paga
+          const currentBill = bills.find((b) => !b.paid) ?? null;
           const usedLimit =
-            card.creditLimit !== null && card.availableLimit !== null
+            typeof card.creditLimit === "number" &&
+            typeof card.availableLimit === "number"
               ? card.creditLimit - card.availableLimit
               : null;
           const usagePercent =
@@ -74,21 +90,21 @@ export default async function FaturasPage() {
                     <div>
                       <p className="text-xs text-slate-500">Vencimento</p>
                       <p className="font-medium text-slate-200">
-                        {formatDate(currentBill.dueDate)}
+                        {formatDate(new Date(currentBill.dueDate))}
                       </p>
                     </div>
                     <div>
                       <p className="text-xs text-slate-500">Fechamento</p>
                       <p className="font-medium text-slate-200">
                         {currentBill.closeDate
-                          ? formatDate(currentBill.closeDate)
+                          ? formatDate(new Date(currentBill.closeDate))
                           : "—"}
                       </p>
                     </div>
                     <div>
                       <p className="text-xs text-slate-500">Pgto. mínimo</p>
                       <p className="font-medium text-slate-200">
-                        {currentBill.minimumPayment !== null
+                        {currentBill.minimumPayment != null
                           ? formatBRL(currentBill.minimumPayment)
                           : "—"}
                       </p>
@@ -138,7 +154,7 @@ export default async function FaturasPage() {
               {/* Histórico de faturas */}
               <div>
                 <CardTitle>Histórico de faturas</CardTitle>
-                {card.bills.length === 0 ? (
+                {bills.length === 0 ? (
                   <p className="mt-2 text-sm text-slate-500">
                     Nenhuma fatura sincronizada.
                   </p>
@@ -156,10 +172,10 @@ export default async function FaturasPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/70">
-                      {card.bills.map((bill) => (
+                      {bills.map((bill) => (
                         <tr key={bill.id}>
                           <td className="py-2 text-slate-300">
-                            {formatDate(bill.dueDate)}
+                            {formatDate(new Date(bill.dueDate))}
                           </td>
                           <td className="py-2 text-right font-mono tabular-nums text-slate-200">
                             {formatBRL(bill.totalAmount)}

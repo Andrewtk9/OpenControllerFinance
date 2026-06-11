@@ -1,4 +1,4 @@
-import { prisma } from "./db";
+import { db, getSettings } from "./db";
 
 // Categorias que não contam como gasto/ganho no orçamento
 // (evita contar duas vezes: a compra no cartão já conta, o pagamento da fatura não)
@@ -22,44 +22,41 @@ export interface MonthlySummary {
   byCategory: { category: string; total: number }[];
 }
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/**
+ * Intervalo [start, end) do mês como strings ISO (yyyy-mm-dd).
+ * Comparação lexicográfica funciona tanto para datas "yyyy-mm-dd" quanto
+ * para ISO completo ("yyyy-mm-ddThh:mm:ss...").
+ */
 export function monthRange(year: number, month: number) {
-  const start = new Date(year, month - 1, 1);
-  const end = new Date(year, month, 1);
+  const start = `${year}-${pad2(month)}-01`;
+  const nextYear = month === 12 ? year + 1 : year;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const end = `${nextYear}-${pad2(nextMonth)}-01`;
   return { start, end };
 }
 
-export async function getSettings() {
-  return prisma.settings.upsert({
-    where: { id: 1 },
-    update: {},
-    create: { id: 1 },
-  });
+async function monthTransactions(year: number, month: number) {
+  const { start, end } = monthRange(year, month);
+  return db.transactions.where("date").between(start, end, true, false).toArray();
 }
 
 export async function getMonthlySpending(year: number, month: number) {
-  const { start, end } = monthRange(year, month);
-  const result = await prisma.transaction.aggregate({
-    _sum: { amount: true },
-    where: {
-      date: { gte: start, lt: end },
-      amount: { lt: 0 },
-      category: { notIn: EXCLUDED_CATEGORIES },
-    },
-  });
-  return -(result._sum.amount ?? 0);
+  const txs = await monthTransactions(year, month);
+  const sum = txs
+    .filter((t) => t.amount < 0 && !EXCLUDED_CATEGORIES.includes(t.category))
+    .reduce((acc, t) => acc + t.amount, 0);
+  return -sum || 0;
 }
 
 export async function getMonthlyIncome(year: number, month: number) {
-  const { start, end } = monthRange(year, month);
-  const result = await prisma.transaction.aggregate({
-    _sum: { amount: true },
-    where: {
-      date: { gte: start, lt: end },
-      amount: { gt: 0 },
-      category: { notIn: EXCLUDED_CATEGORIES },
-    },
-  });
-  return result._sum.amount ?? 0;
+  const txs = await monthTransactions(year, month);
+  return txs
+    .filter((t) => t.amount > 0 && !EXCLUDED_CATEGORIES.includes(t.category))
+    .reduce((acc, t) => acc + t.amount, 0);
 }
 
 // Média de ganhos dos últimos `months` meses completos (exclui o mês atual)
@@ -91,10 +88,10 @@ export async function getUpcomingRecurring(
   const isCurrentMonth =
     today.getFullYear() === year && today.getMonth() + 1 === month;
   if (!isCurrentMonth) return 0;
-  const recurring = await prisma.recurringExpense.findMany({
-    where: { active: true, dayOfMonth: { gt: today.getDate() } },
-  });
-  return recurring.reduce((sum, r) => sum + r.amount, 0);
+  const recurring = await db.recurring.toArray();
+  return recurring
+    .filter((r) => r.active && r.dayOfMonth > today.getDate())
+    .reduce((sum, r) => sum + r.amount, 0);
 }
 
 export async function getBudget(year: number, month: number) {
@@ -117,18 +114,14 @@ export async function getBudget(year: number, month: number) {
 }
 
 export async function getSpendingByCategory(year: number, month: number) {
-  const { start, end } = monthRange(year, month);
-  const grouped = await prisma.transaction.groupBy({
-    by: ["category"],
-    _sum: { amount: true },
-    where: {
-      date: { gte: start, lt: end },
-      amount: { lt: 0 },
-      category: { notIn: EXCLUDED_CATEGORIES },
-    },
-  });
-  return grouped
-    .map((g) => ({ category: g.category, total: -(g._sum.amount ?? 0) }))
+  const txs = await monthTransactions(year, month);
+  const totals = new Map<string, number>();
+  for (const t of txs) {
+    if (t.amount >= 0 || EXCLUDED_CATEGORIES.includes(t.category)) continue;
+    totals.set(t.category, (totals.get(t.category) ?? 0) - t.amount);
+  }
+  return Array.from(totals.entries())
+    .map(([category, total]) => ({ category, total }))
     .sort((a, b) => b.total - a.total);
 }
 

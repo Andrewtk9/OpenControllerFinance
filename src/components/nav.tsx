@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useLiveQuery } from "dexie-react-hooks";
+import { db } from "@/lib/local/db";
 
 const LINKS = [
   { href: "/", label: "Dashboard", icon: "◧" },
@@ -9,7 +11,6 @@ const LINKS = [
   { href: "/faturas", label: "Faturas", icon: "▤" },
   { href: "/analise", label: "Análise", icon: "◔" },
   { href: "/aprenda", label: "Aprenda", icon: "✦" },
-  { href: "/planos", label: "Planos", icon: "◆" },
   { href: "/config", label: "Configurações", icon: "⚙" },
 ];
 
@@ -19,14 +20,22 @@ const PLAN_LABELS: Record<string, string> = {
   business: "Empresa",
 };
 
-export function Nav({
-  unreadCount,
-  plan = "free",
-}: {
-  unreadCount: number;
-  plan?: string;
-}) {
+export function Nav() {
   const pathname = usePathname();
+
+  const unreadCount =
+    useLiveQuery(
+      () => db.notifications.filter((n) => !n.read).count(),
+      [],
+      0,
+    ) ?? 0;
+
+  const plan =
+    useLiveQuery(
+      async () => (await db.settings.get(1))?.plan ?? "free",
+      [],
+      "free" as const,
+    ) ?? "free";
 
   return (
     <header className="sticky top-0 z-20 border-b border-slate-800 bg-slate-950/80 backdrop-blur">
@@ -46,17 +55,16 @@ export function Nav({
           </span>
         </Link>
 
-        <Link
-          href="/planos"
-          title="Seu plano — ver planos"
-          className={`mr-1 hidden whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold transition-colors md:inline-block ${
+        <span
+          title="Seu plano"
+          className={`mr-1 hidden whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold md:inline-block ${
             plan === "free"
-              ? "border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
-              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:border-emerald-400"
+              ? "border-slate-700 text-slate-400"
+              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
           }`}
         >
           {PLAN_LABELS[plan] ?? plan}
-        </Link>
+        </span>
 
         <nav className="flex flex-1 items-center gap-1 overflow-x-auto">
           {LINKS.map((link) => {

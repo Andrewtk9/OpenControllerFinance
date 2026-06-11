@@ -1,11 +1,15 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { prisma } from "@/lib/db";
+import { useLiveQuery } from "dexie-react-hooks";
+import { db, DEFAULT_SETTINGS, type Settings } from "@/lib/local/db";
 import {
   formatBRL,
   getMonthlySummary,
-  getSettings,
   monthRange,
-} from "@/lib/budget";
+} from "@/lib/local/budget";
+import { runSync, MissingPluggyCredentialsError } from "@/lib/local/sync";
 import {
   Amount,
   Card,
@@ -16,14 +20,7 @@ import {
   ProgressBar,
 } from "@/components/ui";
 import { categoryBarClass } from "@/components/categories";
-import {
-  formatDate,
-  formatDateTime,
-  monthLabel,
-} from "@/components/format";
-import { OnboardingGate } from "@/app/onboarding-gate";
-
-export const dynamic = "force-dynamic";
+import { formatDate, formatDateTime, monthLabel } from "@/components/format";
 
 const MODE_LABELS: Record<string, string> = {
   goal: "Meta definida",
@@ -31,65 +28,263 @@ const MODE_LABELS: Record<string, string> = {
   fixed_income: "% da renda informada",
 };
 
-export default async function DashboardPage() {
-  await OnboardingGate();
+const AUTO_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 horas
+
+function hasPluggyCredentials(s: Settings | undefined | null) {
+  return Boolean(
+    s?.pluggyClientId?.trim() &&
+      s?.pluggyClientSecret?.trim() &&
+      s?.pluggyItemIds?.trim(),
+  );
+}
+
+type SyncState = "idle" | "running" | "ok" | "error" | "missing_credentials";
+
+export default function DashboardPage() {
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
-  const { start } = monthRange(year, month);
 
-  const [
-    summary,
-    settings,
-    bankAccounts,
-    openBills,
-    lastTransactions,
-    lastSync,
-    accountCount,
-  ] = await Promise.all([
-    getMonthlySummary(year, month),
-    getSettings(),
-    prisma.account.findMany({ where: { type: "BANK" } }),
-    prisma.creditCardBill.findMany({
-      where: { paid: false, dueDate: { gte: start } },
-      include: { account: true },
-      orderBy: { dueDate: "asc" },
-    }),
-    prisma.transaction.findMany({
-      include: { account: true },
-      orderBy: { date: "desc" },
-      take: 10,
-    }),
-    prisma.syncLog.findFirst({ orderBy: { ranAt: "desc" } }),
-    prisma.account.count(),
-  ]);
+  // ===== Dados locais (liveQuery: recarregam sozinhos após o sync) =====
+  const summary = useLiveQuery(
+    () => getMonthlySummary(year, month),
+    [year, month],
+  );
+  const settings = useLiveQuery(
+    async () => (await db.settings.get(1)) ?? DEFAULT_SETTINGS,
+    [],
+  );
+  const accounts = useLiveQuery(() => db.accounts.toArray(), []);
+  const openBills = useLiveQuery(async () => {
+    const { start } = monthRange(year, month);
+    const bills = await db.bills
+      .where("dueDate")
+      .aboveOrEqual(start)
+      .sortBy("dueDate");
+    return bills.filter((b) => !b.paid);
+  }, [year, month]);
+  const lastTransactions = useLiveQuery(
+    () => db.transactions.orderBy("date").reverse().limit(10).toArray(),
+    [],
+  );
+  const lastSync = useLiveQuery(
+    () => db.synclogs.orderBy("ranAt").last(),
+    [],
+  );
 
-  // Estado totalmente vazio: nunca sincronizou nada
-  if (accountCount === 0 && lastTransactions.length === 0) {
+  // ===== Sincronização =====
+  const [syncState, setSyncState] = useState<SyncState>("idle");
+  const [syncMessages, setSyncMessages] = useState<string[]>([]);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncResultMsg, setSyncResultMsg] = useState<string | null>(null);
+  const syncingRef = useRef(false);
+
+  async function handleSync() {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    setSyncState("running");
+    setSyncMessages([]);
+    setSyncError(null);
+    setSyncResultMsg(null);
+    try {
+      const result = await runSync((msg) =>
+        setSyncMessages((prev) => [...prev, msg]),
+      );
+      if (result.status === "error") {
+        setSyncState("error");
+        setSyncError(
+          result.message ||
+            (result.errors?.length ? String(result.errors[0]) : null) ||
+            "Falha na sincronização.",
+        );
+      } else {
+        setSyncState("ok");
+        setSyncResultMsg(
+          result.message ??
+            `${result.newTransactions} ${
+              result.newTransactions === 1
+                ? "transação nova"
+                : "transações novas"
+            }`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof MissingPluggyCredentialsError) {
+        setSyncState("missing_credentials");
+      } else {
+        setSyncState("error");
+        setSyncError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      syncingRef.current = false;
+    }
+  }
+
+  // Auto-sync ao abrir, se o último sync tiver mais de 6h e houver credenciais
+  const autoSyncTried = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (autoSyncTried.current) return;
+      const s = await db.settings.get(1);
+      if (!hasPluggyCredentials(s)) return;
+      const last = await db.synclogs.orderBy("ranAt").last();
+      if (
+        last &&
+        Date.now() - new Date(last.ranAt).getTime() < AUTO_SYNC_INTERVAL_MS
+      ) {
+        return;
+      }
+      if (cancelled || autoSyncTried.current) return;
+      autoSyncTried.current = true;
+      void handleSync();
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ===== Carregando =====
+  const loading =
+    summary === undefined ||
+    settings === undefined ||
+    accounts === undefined ||
+    openBills === undefined ||
+    lastTransactions === undefined;
+
+  if (loading) {
     return (
-      <div className="mx-auto max-w-2xl">
+      <div className="flex items-center justify-center py-24">
+        <p className="animate-pulse text-sm text-slate-500">Carregando…</p>
+      </div>
+    );
+  }
+
+  const syncing = syncState === "running";
+
+  const syncButton = (
+    <button
+      type="button"
+      onClick={handleSync}
+      disabled={syncing}
+      className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-emerald-950 shadow-lg shadow-emerald-500/20 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <span aria-hidden className={syncing ? "animate-spin" : ""}>
+        🔄
+      </span>
+      {syncing ? "Sincronizando…" : "Sincronizar"}
+    </button>
+  );
+
+  const syncFeedback = (
+    <>
+      {syncing && (
+        <Card className="border-emerald-500/30 bg-emerald-500/5">
+          <div className="flex items-center gap-3">
+            <span aria-hidden className="animate-spin text-lg">
+              ⏳
+            </span>
+            <p className="text-sm font-medium text-slate-200">
+              Sincronizando com seus bancos…
+            </p>
+          </div>
+          {syncMessages.length > 0 && (
+            <ul className="mt-3 space-y-1 text-xs text-slate-400">
+              {syncMessages.slice(-6).map((msg, i) => (
+                <li key={`${i}-${msg}`} className="font-mono">
+                  {msg}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
+
+      {syncState === "missing_credentials" && (
+        <Card className="border-amber-500/40 bg-amber-500/10">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="text-xl" aria-hidden>
+                🔑
+              </span>
+              <div>
+                <p className="text-sm font-semibold text-amber-200">
+                  Credenciais da Pluggy não configuradas
+                </p>
+                <p className="mt-0.5 text-xs text-amber-200/70">
+                  Preencha Client ID, Client Secret e os Item IDs na seção
+                  “Conexão Pluggy” das Configurações para sincronizar.
+                </p>
+              </div>
+            </div>
+            <Link
+              href="/config"
+              className="rounded-lg bg-amber-500/20 px-4 py-2 text-xs font-semibold text-amber-200 transition-colors hover:bg-amber-500/30"
+            >
+              Abrir Configurações →
+            </Link>
+          </div>
+        </Card>
+      )}
+
+      {syncState === "error" && (
+        <Card className="border-rose-500/40 bg-rose-500/10">
+          <div className="flex items-center gap-3">
+            <span className="text-xl" aria-hidden>
+              ⚠️
+            </span>
+            <p className="text-sm text-rose-200">
+              Erro na sincronização
+              {syncError ? (
+                <>
+                  : <span className="font-medium">{syncError}</span>
+                </>
+              ) : (
+                "."
+              )}
+            </p>
+          </div>
+        </Card>
+      )}
+
+      {syncState === "ok" && (
+        <Card className="border-emerald-500/30 bg-emerald-500/5 py-3">
+          <p className="text-sm text-emerald-300">
+            ✓ Sincronização concluída
+            {syncResultMsg ? ` — ${syncResultMsg}` : "."}
+          </p>
+        </Card>
+      )}
+    </>
+  );
+
+  // ===== Estado totalmente vazio: nunca sincronizou nada =====
+  if (accounts.length === 0 && lastTransactions.length === 0) {
+    return (
+      <div className="mx-auto max-w-2xl space-y-6">
         <PageHeader
           title="Bem-vindo ao OpenControllerFinance"
           subtitle="Suas finanças pessoais, sincronizadas direto dos seus bancos."
-        />
+        >
+          {syncButton}
+        </PageHeader>
+        {syncFeedback}
         <EmptyState title="Nenhum dado por aqui ainda" icon="🚀">
           <ol className="mt-2 list-decimal space-y-2 pl-5 text-left">
             <li>
-              Configure suas credenciais da Pluggy no arquivo{" "}
-              <code className="rounded bg-slate-800 px-1.5 py-0.5 text-xs">
-                .env
-              </code>
+              Preencha suas credenciais da Pluggy em{" "}
+              <Link href="/config" className="text-emerald-400 underline">
+                Configurações → Conexão Pluggy
+              </Link>
             </li>
             <li>
               Conecte suas contas (Mercado Pago, Nubank, Inter, BB, Itaú) via
-              Open Finance
+              Open Finance e informe os Item IDs
             </li>
             <li>
-              Rode{" "}
-              <code className="rounded bg-slate-800 px-1.5 py-0.5 text-xs">
-                npm run sync
-              </code>{" "}
-              para importar contas, transações e faturas
+              Toque em <strong>🔄 Sincronizar</strong> para importar contas,
+              transações e faturas
             </li>
             <li>
               Defina seu orçamento mensal em{" "}
@@ -103,6 +298,8 @@ export default async function DashboardPage() {
     );
   }
 
+  const accountById = new Map(accounts.map((a) => [a.id, a]));
+  const bankAccounts = accounts.filter((a) => a.type === "BANK");
   const totalBankBalance = bankAccounts.reduce((s, a) => s + a.balance, 0);
   const totalOpenBills = openBills.reduce((s, b) => s + b.totalAmount, 0);
   const nextBills = openBills.slice(0, 5);
@@ -118,7 +315,11 @@ export default async function DashboardPage() {
       <PageHeader
         title="Dashboard"
         subtitle={`Resumo de ${monthLabel(year, month)}`}
-      />
+      >
+        {syncButton}
+      </PageHeader>
+
+      {syncFeedback}
 
       {showAlert && (
         <div className="flex items-center gap-3 rounded-2xl border border-rose-500/40 bg-rose-500/10 px-5 py-4 text-rose-200">
@@ -175,9 +376,7 @@ export default async function DashboardPage() {
             <ProgressBar percent={summary.percentUsed ?? 0} className="h-3.5" />
             <div className="mt-2 flex justify-between text-xs text-slate-500">
               <span>{Math.round(summary.percentUsed ?? 0)}% usado</span>
-              <span>
-                alerta em {settings.alertThreshold}% do orçamento
-              </span>
+              <span>alerta em {settings.alertThreshold}% do orçamento</span>
             </div>
           </div>
         </Card>
@@ -338,25 +537,28 @@ export default async function DashboardPage() {
             </p>
           ) : (
             <ul className="mt-4 divide-y divide-slate-800">
-              {nextBills.map((bill) => (
-                <li
-                  key={bill.id}
-                  className="flex items-center justify-between gap-3 py-2.5"
-                >
-                  <div>
-                    <p className="text-sm font-medium text-slate-200">
-                      {bill.account.name}
-                    </p>
-                    <p className="text-xs text-slate-500">
-                      {bill.account.bankName} · vence em{" "}
-                      {formatDate(bill.dueDate)}
-                    </p>
-                  </div>
-                  <span className="font-mono text-sm font-semibold tabular-nums text-rose-400">
-                    {formatBRL(bill.totalAmount)}
-                  </span>
-                </li>
-              ))}
+              {nextBills.map((bill) => {
+                const account = accountById.get(bill.accountId);
+                return (
+                  <li
+                    key={bill.id}
+                    className="flex items-center justify-between gap-3 py-2.5"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-slate-200">
+                        {account?.name ?? "Cartão"}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {account?.bankName ?? "—"} · vence em{" "}
+                        {formatDate(bill.dueDate)}
+                      </p>
+                    </div>
+                    <span className="font-mono text-sm font-semibold tabular-nums text-rose-400">
+                      {formatBRL(bill.totalAmount)}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </Card>
@@ -390,7 +592,7 @@ export default async function DashboardPage() {
                       {tx.description}
                     </td>
                     <td className="hidden whitespace-nowrap py-2.5 pr-4 text-slate-500 sm:table-cell">
-                      {tx.account.bankName}
+                      {accountById.get(tx.accountId)?.bankName ?? "—"}
                     </td>
                     <td className="hidden py-2.5 pr-4 md:table-cell">
                       <CategoryBadge category={tx.category} />
@@ -420,18 +622,13 @@ export default async function DashboardPage() {
               </span>
             ) : (
               <span className="text-rose-500">
-                erro{lastSync.message ? `: ${lastSync.message}` : ""}
+                {lastSync.status === "partial" ? "parcial" : "erro"}
+                {lastSync.message ? `: ${lastSync.message}` : ""}
               </span>
             )}
           </>
         ) : (
-          <>
-            Nunca sincronizado — rode{" "}
-            <code className="rounded bg-slate-900 px-1.5 py-0.5">
-              npm run sync
-            </code>{" "}
-            para importar seus dados.
-          </>
+          <>Nunca sincronizado — toque em 🔄 Sincronizar para importar seus dados.</>
         )}
       </p>
     </div>

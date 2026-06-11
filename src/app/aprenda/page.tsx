@@ -1,14 +1,11 @@
+"use client";
+
 import Link from "next/link";
-import {
-  formatBRL,
-  getMonthlyIncome,
-  getMonthlySpending,
-  getSettings,
-} from "@/lib/budget";
+import { useLiveQuery } from "dexie-react-hooks";
+import { db } from "@/lib/local/db";
+import { EXCLUDED_CATEGORIES, formatBRL, monthRange } from "@/lib/local/budget";
 import { Card, CardTitle, PageHeader } from "@/components/ui";
 import { monthLabel } from "@/components/format";
-
-export const dynamic = "force-dynamic";
 
 // ---------------------------------------------------------------------------
 // Exemplo numérico fixo do funil Faturamento → Lucro Líquido
@@ -106,13 +103,23 @@ const CLASSIC_MISTAKES = [
   },
 ];
 
-export default async function AprendaPage() {
-  const settings = await getSettings();
+export default function AprendaPage() {
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
 
-  const isBusiness = settings.profileType === "business";
+  // Dados reais do negócio (mês corrente), calculados no aparelho
+  const data = useLiveQuery(async () => {
+    const settings = await db.settings.get(1);
+    const { start, end } = monthRange(year, month);
+    const txs = await db.transactions
+      .where("date")
+      .between(start, end, true, false)
+      .toArray();
+    return { settings, txs };
+  }, [year, month]);
+
+  const isBusiness = data?.settings?.profileType === "business";
 
   let real: {
     income: number;
@@ -121,11 +128,15 @@ export default async function AprendaPage() {
     margin: number | null;
   } | null = null;
 
-  if (isBusiness) {
-    const [income, spent] = await Promise.all([
-      getMonthlyIncome(year, month),
-      getMonthlySpending(year, month),
-    ]);
+  if (isBusiness && data) {
+    const excluded = EXCLUDED_CATEGORIES as readonly string[];
+    let income = 0;
+    let spent = 0;
+    for (const tx of data.txs) {
+      if (excluded.includes(tx.category)) continue;
+      if (tx.amount > 0) income += tx.amount;
+      else spent += -tx.amount;
+    }
     if (income > 0 || spent > 0) {
       const result = income - spent;
       real = {

@@ -1,6 +1,9 @@
-import Link from "next/link";
-import { prisma } from "@/lib/db";
-import { EXCLUDED_CATEGORIES, formatBRL } from "@/lib/budget";
+"use client";
+
+import { useState } from "react";
+import { useLiveQuery } from "dexie-react-hooks";
+import { db } from "@/lib/local/db";
+import { EXCLUDED_CATEGORIES, formatBRL } from "@/lib/local/budget";
 import { categoryBarClass } from "@/components/categories";
 import {
   Card,
@@ -9,11 +12,6 @@ import {
   EmptyState,
   PageHeader,
 } from "@/components/ui";
-import { OnboardingGate } from "@/app/onboarding-gate";
-
-export const dynamic = "force-dynamic";
-
-type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 const PERIODS = [
   { key: "mes", label: "Este mês", months: 1 },
@@ -21,6 +19,8 @@ const PERIODS = [
   { key: "6m", label: "6 meses", months: 6 },
   { key: "12m", label: "12 meses", months: 12 },
 ] as const;
+
+type PeriodKey = (typeof PERIODS)[number]["key"];
 
 // Normaliza descrição de estabelecimento:
 // lowercase, sem números/datas/asteriscos, espaços colapsados
@@ -40,32 +40,33 @@ function normalizeMerchant(description: string): string {
   return tokens.slice(0, 2).join(" ");
 }
 
-export default async function AnalisePage({
-  searchParams,
-}: {
-  searchParams: SearchParams;
-}) {
-  await OnboardingGate();
-  const sp = await searchParams;
-  const periodoRaw = Array.isArray(sp.periodo) ? sp.periodo[0] : sp.periodo;
-  const period =
-    PERIODS.find((p) => p.key === periodoRaw) ?? PERIODS[0];
+export default function AnalisePage() {
+  const [periodKey, setPeriodKey] = useState<PeriodKey>("mes");
+  const period = PERIODS.find((p) => p.key === periodKey) ?? PERIODS[0];
 
   const now = new Date();
-  const start = new Date(
+  const startDate = new Date(
     now.getFullYear(),
     now.getMonth() - (period.months - 1),
     1
   );
+  const startIso = `${startDate.getFullYear()}-${String(
+    startDate.getMonth() + 1
+  ).padStart(2, "0")}-01`;
 
-  const expenses = await prisma.transaction.findMany({
-    where: {
-      date: { gte: start },
-      amount: { lt: 0 },
-      category: { notIn: EXCLUDED_CATEGORIES },
-    },
-    select: { description: true, amount: true, category: true },
-  });
+  const excluded = EXCLUDED_CATEGORIES as readonly string[];
+
+  const expenses = useLiveQuery(
+    () =>
+      db.transactions
+        .where("date")
+        .aboveOrEqual(startIso)
+        .filter((tx) => tx.amount < 0 && !excluded.includes(tx.category))
+        .toArray(),
+    [startIso]
+  );
+
+  if (!expenses) return null;
 
   // --- Por categoria ---
   const byCategory = new Map<string, { total: number; count: number }>();
@@ -118,16 +119,14 @@ export default async function AnalisePage({
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Análise"
-        subtitle="Com o que você mais gasta"
-      >
+      <PageHeader title="Análise" subtitle="Com o que você mais gasta">
         {/* Seletor de período */}
         <div className="flex gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1">
           {PERIODS.map((p) => (
-            <Link
+            <button
               key={p.key}
-              href={`/analise?periodo=${p.key}`}
+              type="button"
+              onClick={() => setPeriodKey(p.key)}
               className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
                 p.key === period.key
                   ? "bg-emerald-500/15 text-emerald-400"
@@ -135,7 +134,7 @@ export default async function AnalisePage({
               }`}
             >
               {p.label}
-            </Link>
+            </button>
           ))}
         </div>
       </PageHeader>
@@ -143,11 +142,8 @@ export default async function AnalisePage({
       {expenses.length === 0 ? (
         <EmptyState title="Nenhum gasto no período" icon="📊">
           Não há transações de gasto para analisar neste período. Tente um
-          período maior ou rode{" "}
-          <code className="rounded bg-slate-800 px-1.5 py-0.5 text-xs">
-            npm run sync
-          </code>
-          .
+          período maior ou sincronize seus bancos nas{" "}
+          <span className="font-medium text-slate-300">Configurações</span>.
         </EmptyState>
       ) : (
         <>

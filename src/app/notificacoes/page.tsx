@@ -1,13 +1,9 @@
-import { prisma } from "@/lib/db";
+"use client";
+
+import { useLiveQuery } from "dexie-react-hooks";
+import { db } from "@/lib/local/db";
 import { EmptyState, PageHeader } from "@/components/ui";
 import { formatDateTime } from "@/components/format";
-import {
-  markAllNotificationsRead,
-  markNotificationRead,
-} from "@/app/actions";
-import { OnboardingGate } from "@/app/onboarding-gate";
-
-export const dynamic = "force-dynamic";
 
 const TYPE_ICONS: Record<string, string> = {
   budget_alert: "⚠️",
@@ -15,11 +11,22 @@ const TYPE_ICONS: Record<string, string> = {
   bill_due: "💳",
 };
 
-export default async function NotificacoesPage() {
-  await OnboardingGate();
-  const notifications = await prisma.notification.findMany({
-    orderBy: { createdAt: "desc" },
-  });
+async function markRead(id: number) {
+  await db.notifications.update(id, { read: true });
+}
+
+async function markAllRead() {
+  await db.notifications.filter((n) => !n.read).modify({ read: true });
+}
+
+export default function NotificacoesPage() {
+  const notifications = useLiveQuery(
+    () => db.notifications.orderBy("createdAt").reverse().toArray(),
+    []
+  );
+
+  if (!notifications) return null;
+
   const unread = notifications.filter((n) => !n.read).length;
 
   return (
@@ -33,14 +40,13 @@ export default async function NotificacoesPage() {
         }
       >
         {unread > 0 && (
-          <form action={markAllNotificationsRead}>
-            <button
-              type="submit"
-              className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800"
-            >
-              Marcar todas como lidas
-            </button>
-          </form>
+          <button
+            type="button"
+            onClick={() => void markAllRead()}
+            className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800"
+          >
+            Marcar todas como lidas
+          </button>
         )}
       </PageHeader>
 
@@ -76,20 +82,18 @@ export default async function NotificacoesPage() {
                   {n.body}
                 </p>
                 <p className="mt-1.5 text-xs text-slate-500">
-                  {formatDateTime(n.createdAt)}
+                  {formatDateTime(new Date(n.createdAt))}
                 </p>
               </div>
               {!n.read && (
-                <form action={markNotificationRead}>
-                  <input type="hidden" name="id" value={n.id} />
-                  <button
-                    type="submit"
-                    title="Marcar como lida"
-                    className="rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:bg-slate-800"
-                  >
-                    lida ✓
-                  </button>
-                </form>
+                <button
+                  type="button"
+                  onClick={() => void markRead(n.id!)}
+                  title="Marcar como lida"
+                  className="rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:bg-slate-800"
+                >
+                  lida ✓
+                </button>
               )}
             </li>
           ))}
