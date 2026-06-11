@@ -141,25 +141,32 @@ function bakedConfig(): BakedConfig {
   return (window as unknown as { OCF_CONFIG?: BakedConfig }).OCF_CONFIG ?? {};
 }
 
-export async function getSettings(): Promise<Settings> {
+/** Mescla credenciais embutidas em campos ainda vazios (sem gravar nada). */
+function mergeBaked(s: Settings): Settings {
   const baked = bakedConfig();
+  return {
+    ...s,
+    pluggyClientId: s.pluggyClientId || baked.pluggyClientId,
+    pluggyClientSecret: s.pluggyClientSecret || baked.pluggyClientSecret,
+    pluggyItemIds: s.pluggyItemIds || baked.pluggyItemIds,
+  };
+}
+
+/**
+ * Leitura PURA (sem writes): segura para usar dentro de liveQuery.
+ * Writes dentro de liveQuery lançam ReadOnlyError no Dexie.
+ */
+export async function getSettings(): Promise<Settings> {
   const existing = await db.settings.get(1);
-  if (existing) {
-    // preenche credenciais embutidas se ainda não configuradas manualmente
-    const fill: Partial<Settings> = {};
-    if (!existing.pluggyClientId && baked.pluggyClientId)
-      fill.pluggyClientId = baked.pluggyClientId;
-    if (!existing.pluggyClientSecret && baked.pluggyClientSecret)
-      fill.pluggyClientSecret = baked.pluggyClientSecret;
-    if (!existing.pluggyItemIds && baked.pluggyItemIds)
-      fill.pluggyItemIds = baked.pluggyItemIds;
-    if (Object.keys(fill).length > 0) {
-      await db.settings.update(1, fill);
-      return { ...existing, ...fill };
-    }
-    return existing;
-  }
-  const seeded: Settings = { ...DEFAULT_SETTINGS, ...baked };
+  return mergeBaked(existing ?? DEFAULT_SETTINGS);
+}
+
+/**
+ * Persiste a linha de settings (cria se não existe e grava credenciais
+ * embutidas). Chamar UMA vez na inicialização do app — fora de liveQuery.
+ */
+export async function ensureSettingsSeeded(): Promise<void> {
+  const existing = await db.settings.get(1);
+  const seeded = mergeBaked(existing ?? DEFAULT_SETTINGS);
   await db.settings.put(seeded);
-  return seeded;
 }

@@ -1,7 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db, DEFAULT_SETTINGS } from "@/lib/local/db";
+import { db, DEFAULT_SETTINGS, ensureSettingsSeeded } from "@/lib/local/db";
 import { Nav } from "@/components/nav";
 import { WelcomeScreen } from "@/components/welcome-screen";
 
@@ -11,6 +12,11 @@ import { WelcomeScreen } from "@/components/welcome-screen";
 //   profileType == null   → tela de boas-vindas (grava direto em db.settings)
 //   senão                 → nav + página
 export function AppShell({ children }: { children: React.ReactNode }) {
+  // grava defaults + credenciais embutidas UMA vez, fora de liveQuery
+  useEffect(() => {
+    void ensureSettingsSeeded();
+  }, []);
+
   // undefined = ainda carregando; sem linha no banco = DEFAULT_SETTINGS
   const settings = useLiveQuery(
     async () => (await db.settings.get(1)) ?? DEFAULT_SETTINGS,
