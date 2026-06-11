@@ -5,9 +5,11 @@ const config: CapacitorConfig = {
   appName: "OpenControllerFinance",
   webDir: "out",
   plugins: {
-    // proxy nativo de HTTP: chamadas à API da Pluggy direto do celular, sem CORS
+    // IMPORTANTE: enabled:false — o patch global de fetch quebra a navegação
+    // interna do Next. As chamadas à Pluggy usam CapacitorHttp.get/post
+    // diretamente (sempre nativas, sem CORS), sem precisar do patch.
     CapacitorHttp: {
-      enabled: true,
+      enabled: false,
     },
   },
 };
